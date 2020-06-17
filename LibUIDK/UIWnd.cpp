@@ -1297,6 +1297,119 @@ int CUIWnd::ApplyStoryboardItem(const CTRLPROPERTIES *pCtrlProp)
 	return 0;
 }
 
+BOOL SaveBitmapToFile(HBITMAP   hBitmap, CDC * pdc, CString szfilename)
+{
+	HDC     hDC;
+	//当前分辨率下每象素所占字节数          
+	int     iBits;
+	//位图中每象素所占字节数          
+	WORD     wBitCount;
+	//定义调色板大小，     位图中像素字节大小     ，位图文件大小     ，     写入文件字节数              
+	DWORD     dwPaletteSize = 0, dwBmBitsSize = 0, dwDIBSize = 0, dwWritten = 0;
+	//位图属性结构              
+	BITMAP     Bitmap;
+	//位图文件头结构          
+	BITMAPFILEHEADER     bmfHdr;
+	//位图信息头结构              
+	BITMAPINFOHEADER     bi;
+	//指向位图信息头结构                  
+	LPBITMAPINFOHEADER     lpbi;
+	//定义文件，分配内存句柄，调色板句柄              
+	HANDLE     fh, hDib, hPal, hOldPal = NULL;
+
+	//计算位图文件每个像素所占字节数              
+	hDC = CreateDC(L"DISPLAY", NULL, NULL, NULL);
+	iBits = GetDeviceCaps(hDC, BITSPIXEL)     *     GetDeviceCaps(hDC, PLANES);
+	DeleteDC(hDC);
+	if (iBits <= 1)
+		wBitCount = 1;
+	else  if (iBits <= 4)
+		wBitCount = 4;
+	else if (iBits <= 8)
+		wBitCount = 8;
+	else
+		wBitCount = 24;
+
+	GetObject(hBitmap, sizeof(Bitmap), (LPSTR)&Bitmap);
+	bi.biSize = sizeof(BITMAPINFOHEADER);
+	bi.biWidth = Bitmap.bmWidth;
+	bi.biHeight = Bitmap.bmHeight;
+	bi.biPlanes = 1;
+	bi.biBitCount = wBitCount;
+	bi.biCompression = BI_RGB;
+	bi.biSizeImage = 0;
+	bi.biXPelsPerMeter = 0;
+	bi.biYPelsPerMeter = 0;
+	bi.biClrImportant = 0;
+	bi.biClrUsed = 0;
+
+	dwBmBitsSize = ((Bitmap.bmWidth *wBitCount + 31) / 32) * 4 * Bitmap.bmHeight;
+
+	//为位图内容分配内存              
+	hDib = GlobalAlloc(GHND, dwBmBitsSize + dwPaletteSize + sizeof(BITMAPINFOHEADER));
+	lpbi = (LPBITMAPINFOHEADER)GlobalLock(hDib);
+	*lpbi = bi;
+
+	//     处理调色板                  
+	hPal = GetStockObject(DEFAULT_PALETTE);
+	if (hPal)
+	{
+		hDC = ::GetDC(NULL);
+		hOldPal = ::SelectPalette(hDC, (HPALETTE)hPal, FALSE);
+		RealizePalette(hDC);
+	}
+
+	//     获取该调色板下新的像素值              
+	GetDIBits(hDC, hBitmap, 0, (UINT)Bitmap.bmHeight,
+		(LPSTR)lpbi + sizeof(BITMAPINFOHEADER) + dwPaletteSize,
+		(BITMAPINFO *)lpbi, DIB_RGB_COLORS);
+	LPSTR lpw = (LPSTR)lpbi + sizeof(BITMAPINFOHEADER) + dwPaletteSize;
+	LONG wbit = ((Bitmap.bmWidth *wBitCount + 31) / 32) * 4;
+	for (int i = 0; i < Bitmap.bmHeight; i++)
+	{
+		for (int j = 0; j < Bitmap.bmWidth; j++)
+		{
+			COLORREF color = pdc->GetPixel(j, i);
+			((LPBYTE)lpw)[i*wbit + j * 3] = GetRValue(color);
+			((LPBYTE)lpw)[i*wbit + j * 3 + 1] = GetGValue(color);
+			((LPBYTE)lpw)[i*wbit + j * 3 + 2] = GetBValue(color);
+		}
+	}
+
+	//恢复调色板                  
+	if (hOldPal)
+	{
+		::SelectPalette(hDC, (HPALETTE)hOldPal, TRUE);
+		RealizePalette(hDC);
+		::ReleaseDC(NULL, hDC);
+	}
+
+	//创建位图文件                  
+	fh = CreateFile(szfilename, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+		FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+
+	if (fh == INVALID_HANDLE_VALUE)         return     FALSE;
+
+	//     设置位图文件头              
+	bmfHdr.bfType = 0x4D42;     //     "BM"              
+	dwDIBSize = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER) + dwPaletteSize + dwBmBitsSize;
+	bmfHdr.bfSize = dwDIBSize;
+	bmfHdr.bfReserved1 = 0;
+	bmfHdr.bfReserved2 = 0;
+	bmfHdr.bfOffBits = (DWORD)sizeof(BITMAPFILEHEADER) + (DWORD)sizeof(BITMAPINFOHEADER) + dwPaletteSize;
+	//     写入位图文件头              
+	WriteFile(fh, (LPSTR)&bmfHdr, sizeof(BITMAPFILEHEADER), &dwWritten, NULL);
+	//     写入位图文件其余内容              
+	WriteFile(fh, (LPSTR)lpbi, dwDIBSize, &dwWritten, NULL);
+	//清除                  
+	GlobalUnlock(hDib);
+	GlobalFree(hDib);
+	CloseHandle(fh);
+
+	return     TRUE;
+
+}
+
 int GetMaskRgn(HIUIIMAGE hbmp, CPoint pt, CRgn &rgnLT, CRgn &rgnRT, CRgn &rgnLD, CRgn &rgnRD,
 	std::vector<int> &vLeft, std::vector<int> &vTop, std::vector<int> &vRight, std::vector<int> &vDown,
 	BOOL &bResizePtTransparent, COLORREF crMask)
@@ -1306,14 +1419,10 @@ int GetMaskRgn(HIUIIMAGE hbmp, CPoint pt, CRgn &rgnLT, CRgn &rgnRT, CRgn &rgnLD,
 		return -1;
 	}
 
-	CDC *pDC = AfxGetMainWnd()->GetWindowDC();
-	CDC	memDC;
-	memDC.CreateCompatibleDC(pDC);
-
-	HBITMAP hOldMemBmp = (HBITMAP)memDC.SelectObject(hbmp);
+	//SaveBitmapToFile(hbmp->GetSafeHBITMAP(), &memDC, L"test1.bmp");
 
 	int w = hbmp->GetWidth();
-	int h = hbmp->GetWidth();
+	int h = hbmp->GetHeight();
 
 	int x = 0;
 	int y = 0;
@@ -1325,11 +1434,11 @@ int GetMaskRgn(HIUIIMAGE hbmp, CPoint pt, CRgn &rgnLT, CRgn &rgnRT, CRgn &rgnLD,
 		{
 			for (y = 0; y < pt.y; y++)
 			{
-				COLORREF crCur = memDC.GetPixel(x, y);
+				COLORREF crCur = hbmp->GetPixel(x, y);
 				if (crCur == crMask)
 				{
 					int y2 = y + 1;
-					while (y2 < pt.y && memDC.GetPixel(x, y2) == crMask)
+					while (y2 < pt.y && hbmp->GetPixel(x, y2) == crMask)
 					{
 						y2++;
 					}
@@ -1352,11 +1461,11 @@ int GetMaskRgn(HIUIIMAGE hbmp, CPoint pt, CRgn &rgnLT, CRgn &rgnRT, CRgn &rgnLD,
 		{
 			for (y = 0; y < pt.y; y++)
 			{
-				COLORREF crCur = memDC.GetPixel(x, y);
+				COLORREF crCur = hbmp->GetPixel(x, y);
 				if (crCur == crMask)
 				{
 					int y2 = y + 1;
-					while (y2 < pt.y && memDC.GetPixel(x, y2) == crMask)
+					while (y2 < pt.y && hbmp->GetPixel(x, y2) == crMask)
 					{
 						y2++;
 					}
@@ -1379,11 +1488,11 @@ int GetMaskRgn(HIUIIMAGE hbmp, CPoint pt, CRgn &rgnLT, CRgn &rgnRT, CRgn &rgnLD,
 		{
 			for (y = pt.y + 1; y < h; y++)
 			{
-				COLORREF crCur = memDC.GetPixel(x, y);
+				COLORREF crCur = hbmp->GetPixel(x, y);
 				if (crCur == crMask)
 				{
 					int y2 = y + 1;
-					while (y2 < h && memDC.GetPixel(x, y2) == crMask)
+					while (y2 < h && hbmp->GetPixel(x, y2) == crMask)
 					{
 						y2++;
 					}
@@ -1406,11 +1515,11 @@ int GetMaskRgn(HIUIIMAGE hbmp, CPoint pt, CRgn &rgnLT, CRgn &rgnRT, CRgn &rgnLD,
 		{
 			for (y = pt.y + 1; y < h; y++)
 			{
-				COLORREF crCur = memDC.GetPixel(x, y);
+				COLORREF crCur = hbmp->GetPixel(x, y);
 				if (crCur == crMask)
 				{
 					int y2 = y + 1;
-					while (y2 < h && memDC.GetPixel(x, y2) == crMask)
+					while (y2 < h && hbmp->GetPixel(x, y2) == crMask)
 					{
 						y2++;
 					}
@@ -1430,7 +1539,7 @@ int GetMaskRgn(HIUIIMAGE hbmp, CPoint pt, CRgn &rgnLT, CRgn &rgnRT, CRgn &rgnLD,
 	{
 		for (x = 0; x < pt.x; ++x)
 		{
-			COLORREF crCur = memDC.GetPixel(x, pt.y);
+			COLORREF crCur = hbmp->GetPixel(x, pt.y);
 			if (crCur != crMask)
 			{
 				vLeft.push_back(x);
@@ -1442,7 +1551,7 @@ int GetMaskRgn(HIUIIMAGE hbmp, CPoint pt, CRgn &rgnLT, CRgn &rgnRT, CRgn &rgnLD,
 	{
 		for (y = 0; y < pt.y; ++y)
 		{
-			COLORREF crCur = memDC.GetPixel(pt.x, y);
+			COLORREF crCur = hbmp->GetPixel(pt.x, y);
 			if (crCur != crMask)
 			{
 				vTop.push_back(y);
@@ -1454,7 +1563,7 @@ int GetMaskRgn(HIUIIMAGE hbmp, CPoint pt, CRgn &rgnLT, CRgn &rgnRT, CRgn &rgnLD,
 	{
 		for (x = pt.x + 1; x < w; ++x)
 		{
-			COLORREF crCur = memDC.GetPixel(x, pt.y);
+			COLORREF crCur = hbmp->GetPixel(x, pt.y);
 			if (crCur != crMask)
 			{
 				vRight.push_back(x);
@@ -1466,7 +1575,7 @@ int GetMaskRgn(HIUIIMAGE hbmp, CPoint pt, CRgn &rgnLT, CRgn &rgnRT, CRgn &rgnLD,
 	{
 		for (y = pt.y + 1; y < h; ++y)
 		{
-			COLORREF crCur = memDC.GetPixel(pt.x, y);
+			COLORREF crCur = hbmp->GetPixel(pt.x, y);
 			if (crCur != crMask)
 			{
 				vDown.push_back(y);
@@ -1475,17 +1584,7 @@ int GetMaskRgn(HIUIIMAGE hbmp, CPoint pt, CRgn &rgnLT, CRgn &rgnRT, CRgn &rgnLD,
 	}
 
 	// resize point
-	bResizePtTransparent = (memDC.GetPixel(pt.x, pt.y) == crMask);
-
-	if (hOldMemBmp != NULL)
-	{
-		memDC.SelectObject(hOldMemBmp);
-	}
-	if (pDC != NULL)
-	{
-		AfxGetMainWnd()->ReleaseDC(pDC);
-	}
-
+	bResizePtTransparent = (hbmp->GetPixel(pt.x, pt.y) == crMask);
 	return 0;
 }
 

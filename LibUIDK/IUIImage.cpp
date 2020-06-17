@@ -1076,6 +1076,12 @@ int CIUIImage::SetCurFrame(int nCurFrame) throw()
 	return 0;
 }
 
+COLORREF LibUIDK::CIUIImage::GetPixel(int x, int y) const throw()
+{
+	byte *pByte = (byte *)(m_pBits)+(y * m_nPitch) + ((x * m_nBPP) / 8);
+	return RGB(pByte[0], pByte[1], pByte[2]);
+}
+
 int CIUIImage::SetShadow(LPCRECT lprcShadow) throw()
 {
 	if (lprcShadow == NULL)
